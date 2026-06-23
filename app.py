@@ -56,6 +56,14 @@ def clean_cookie_file(content: str) -> str:
     return "\n".join(result)
 
 
+def trim_task_logs(task):
+    """Keep logs and errors within memory limits."""
+    if len(task.get("logs", [])) > 100:
+        task["logs"] = task["logs"][-100:]
+    if len(task.get("errors", [])) > 10:
+        task["errors"] = task["errors"][-10:]
+
+
 raw_cookies = None
 
 if SECRETS_FILE.exists():
@@ -310,6 +318,7 @@ def run_download(task_id):
 
         # ─── Smart Search ────────────────────────────────────────────────
         selected = []
+        total_to_search = len(raw_queries)
         for idx, q in enumerate(raw_queries):
             task["current_track"] = q
             # If it's already a YouTube URL, use it directly
@@ -352,10 +361,28 @@ def run_download(task_id):
                         except Exception:
                             continue
                     if found_working:
+                        # Update track status → found and progress
+                        if idx < len(track_list):
+                            track_list[idx]["status"] = "found"
+                        found_count = sum(1 for t in track_list if t["status"] in ("found", "completed"))
+                        with queue_lock:
+                            task["completed_tracks"] = found_count
+                            task["progress"] = int(found_count / max(1, total_to_search) * 50)
+                            if track_list:
+                                task["tracks"] = list(track_list)
                         continue
             except Exception:
                 pass
             selected.append(f"ytsearch1:{q}")
+            # Even on fallback, mark as found so user sees progress
+            if idx < len(track_list):
+                track_list[idx]["status"] = "found"
+            found_count = sum(1 for t in track_list if t["status"] in ("found", "completed"))
+            with queue_lock:
+                task["completed_tracks"] = found_count
+                task["progress"] = int(found_count / max(1, total_to_search) * 50)
+                if track_list:
+                    task["tracks"] = list(track_list)
 
         queries = selected
         task["logs"].append(f"Downloading {len(queries)} músicas...")
@@ -421,7 +448,9 @@ def run_download(task_id):
             except UnicodeEncodeError:
                 safe = line_stripped.encode('utf-8', errors='replace').decode('utf-8')
                 print(f"YT-DLP: {safe}", flush=True)
-            task["logs"].append(line_stripped)
+            with queue_lock:
+                task["logs"].append(line_stripped)
+                trim_task_logs(task)
 
             # Track progression: detect when yt-dlp starts downloading a file
             if "[download] Destination:" in line_stripped:
@@ -431,7 +460,7 @@ def run_download(task_id):
                     if prev is not None:
                         track_list[prev]["status"] = "completed"
                     nxt = next((i for i, t in enumerate(track_list)
-                                if t["status"] == "pending"), None)
+                                if t["status"] in ("pending", "found")), None)
                     if nxt is not None:
                         track_list[nxt]["status"] = "downloading"
                         task["current_track"] = track_list[nxt]["name"]
@@ -439,7 +468,6 @@ def run_download(task_id):
 
             # Track errors by matching video ID to the selected URL list
             if "ERROR:" in line_stripped:
-                task["errors"].append(line_stripped)
                 err_match = re.search(r'\[(\w+)\]', line_stripped)
                 if err_match:
                     err_vid = err_match.group(1)
@@ -449,6 +477,9 @@ def run_download(task_id):
                             with queue_lock:
                                 task["tracks"] = list(track_list)
                             break
+                with queue_lock:
+                    task["errors"].append(line_stripped)
+                    trim_task_logs(task)
 
             # Update progress
             if track_list:
@@ -470,7 +501,7 @@ def run_download(task_id):
             # Mark any remaining downloading/pending as completed on success
             if process.returncode == 0:
                 for t in track_list:
-                    if t["status"] in ("pending", "downloading"):
+                    if t["status"] in ("pending", "found", "downloading"):
                         t["status"] = "completed"
                 task["tracks"] = list(track_list)
                 task["completed_tracks"] = sum(1 for t in track_list if t["status"] == "completed")
@@ -736,6 +767,11 @@ def download_file(filename):
         pass
 
     return response
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────

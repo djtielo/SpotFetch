@@ -251,10 +251,13 @@ function renderQueue() {
       : task.status === "queued" || task.status === "downloading"
         ? `<div class="card-track card-track-pending">♪ Aguardando...</div>`
         : "";
+    const played_found = (task.completed_tracks || 0);
+    const total_to_find = (task.total_tracks || 1);
+    const isSearching = task.status === "downloading" && played_found < total_to_find;
     const progressLabel =
       task.total_tracks > 1
-        ? `${task.completed_tracks || 0} / ${task.total_tracks} faixas`
-        : task.status === "downloading" && (task.progress || 0) === 0
+        ? `${played_found} / ${total_to_find} encontradas`
+        : isSearching && (task.progress || 0) < 10
           ? "Pesquisando..."
           : "";
     const errorsHtml =
@@ -264,7 +267,7 @@ function renderQueue() {
 
     const tracksHtml = (task.tracks && task.tracks.length >= 1)
       ? `<div class="card-tracklist">${task.tracks.map(t => {
-          const icons = { pending: "⏳", downloading: "▶", completed: "✅", error: "❌" };
+          const icons = { pending: "⏳", found: "✅", downloading: "▶", completed: "✅", error: "❌" };
           const icon = icons[t.status] || "⏳";
           return `<div class="track-item ${t.status || ""}">${icon} ${escapeHtml(t ? t.name : "") || "Carregando..."}</div>`;
         }).join("")}</div>`
@@ -362,6 +365,7 @@ function statusLabel(status) {
   const labels = {
     queued: "Na fila",
     downloading: "Baixando",
+    found: "Encontrada",
     completed: "Concluído",
     error: "Erro",
     cancelled: "Cancelado",
@@ -371,6 +375,45 @@ function statusLabel(status) {
 
 // ─── Initialize ─────────────────────────────────────────────────────────────
 
+function hideLoadingOverlay() {
+  const overlay = document.getElementById("loading-overlay");
+  if (overlay) {
+    overlay.classList.add("fade-out");
+    setTimeout(() => overlay.remove(), 500);
+  }
+}
+
+function checkServerReady() {
+  let attempts = 0;
+  const maxAttempts = 10;
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch(`${API}/health`);
+      if (res.ok) {
+        clearInterval(interval);
+        hideLoadingOverlay();
+        refreshQueue();
+      }
+    } catch (e) {
+      attempts++;
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        hideLoadingOverlay();
+        refreshQueue();
+      }
+    }
+  }, 1500);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  refreshQueue();
+  checkServerReady();
 });
+
+// Auto-ping every 5 minutes to prevent hibernation
+setInterval(async () => {
+  try {
+    await fetch(`${API}/health`);
+  } catch (e) {
+    // ignore
+  }
+}, 300000);
