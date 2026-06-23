@@ -246,10 +246,14 @@ def run_download(task_id):
             return
 
         # ─── Smart Search ────────────────────────────────────────────────
-        task["logs"].append(f"Buscando melhores versões para {len(raw_queries)} músicas...")
         selected = []
         for idx, q in enumerate(raw_queries):
             task["current_track"] = q
+            # If it's already a YouTube URL, use it directly
+            if "youtube.com/watch" in q or "youtu.be/" in q or "music.youtube.com" in q:
+                selected.append(q)
+                continue
+            # Otherwise, search YouTube for the best match
             search_cmd = [
                 "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
                 f"ytsearch10:{q}",
@@ -263,7 +267,6 @@ def run_download(task_id):
                     data = json.loads(proc.stdout)
                     entries = data.get("entries") or []
                     valid = [e for e in entries if e.get("id") and e.get("title")]
-                    # Sort by clip_score (lower = less likely to be a clip)
                     valid.sort(key=lambda e: clip_score(e["title"]))
                     found_working = False
                     for entry in valid:
@@ -440,11 +443,11 @@ def process_queue():
             return
         for tid, task in download_queue.items():
             if task["status"] == "queued":
+                active_downloads += 1
                 break
         else:
             return
 
-    active_downloads += 1
     thread = threading.Thread(target=run_download, args=(tid,), daemon=True)
     thread.start()
 
