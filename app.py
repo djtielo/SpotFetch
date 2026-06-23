@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-from flask import Flask, request, jsonify, Response, send_from_directory, send_file
+from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 
 # ─── Fix Windows console encoding ────────────────────────────────────────────
@@ -37,6 +37,32 @@ queue_lock = threading.Lock()
 active_downloads = 0
 MAX_CONCURRENT = 1       # sequential downloads to avoid rate limiting
 
+# ─── Cleanup old files ──────────────────────────────────────────────
+
+CLEANUP_INTERVAL = 300
+FILE_MAX_AGE = 600
+
+def cleanup_old_files():
+    while True:
+        time.sleep(CLEANUP_INTERVAL)
+        now = time.time()
+        try:
+            for f in DOWNLOADS_DIR.rglob("*"):
+                if f.is_file() and f.name != ".gitkeep":
+                    age = now - f.stat().st_mtime
+                    if age > FILE_MAX_AGE:
+                        f.unlink(missing_ok=True)
+            for d in sorted(DOWNLOADS_DIR.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                if d.is_dir() and d != DOWNLOADS_DIR:
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
+cleanup_thread.start()
 
 # ─── Helper: Parse spotdl output ────────────────────────────────────────────
 
@@ -584,11 +610,32 @@ def cancel_download(task_id):
 
 @app.route("/api/downloads/<path:filename>")
 def download_file(filename):
-    """Serve a downloaded file for direct download."""
+    """Serve a downloaded file, then delete it from the server."""
     safe_path = DOWNLOADS_DIR / filename
     if not safe_path.exists() or not safe_path.is_file():
         return jsonify({"error": "File not found"}), 404
-    return send_from_directory(DOWNLOADS_DIR, filename, as_attachment=True)
+
+    response = send_file(safe_path, as_attachment=True, download_name=safe_path.name)
+
+    # Delete the file after serving it to the user
+    try:
+        safe_path.unlink(missing_ok=True)
+        parent = safe_path.parent
+        if parent != DOWNLOADS_DIR:
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+        # If it's a ZIP, also remove the original playlist folder
+        if safe_path.suffix == ".zip":
+            folder_name = safe_path.stem
+            folder_path = DOWNLOADS_DIR / folder_name
+            if folder_path.exists():
+                shutil.rmtree(folder_path, ignore_errors=True)
+    except Exception:
+        pass
+
+    return response
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
