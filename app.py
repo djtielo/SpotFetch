@@ -370,16 +370,19 @@ def run_download(task_id):
         task["logs"].append(f"Downloading {len(queries)} músicas...")
 
         # ─── Download ────────────────────────────────────────────────────
+        task["logs"].append("Iniciando download das músicas...")
         cmd = [
             "yt-dlp",
             "--extractor-args", "youtube:player_client=web",
-            "-f", "bestaudio/best",
+            "-f", "ba",
             "--extract-audio",
             "--audio-format", "mp3",
             "--audio-quality", "320k",
             "--no-check-formats",
             "--socket-timeout", "30",
             "--retries", "3",
+            "--throttled-rate", "100K",
+            "--concurrent-fragments", "3",
             "--output", output_template,
             "--newline",
             "--ignore-errors",
@@ -785,4 +788,4 @@ if __name__ == "__main__":
     print(f"\n  [*] SpotFetch is running!")
     print(f"  [>] Downloads folder: {DOWNLOADS_DIR}")
     print(f"  [>] Open http://localhost:{port} in your browser\n")
-    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=port, threaded=True)

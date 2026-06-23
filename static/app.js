@@ -257,9 +257,11 @@ function renderQueue() {
     const progressLabel =
       task.total_tracks > 1
         ? `${played_found} / ${total_to_find} encontradas`
-        : isSearching && (task.progress || 0) < 10
-          ? "Pesquisando..."
-          : "";
+        : isSearching
+          ? "Buscando..."
+          : task.status === "downloading" && (task.progress || 0) >= 10
+            ? "Baixando..."
+            : "";
     const errorsHtml =
       task.errors && task.errors.length > 0
         ? `<div class="card-errors">${task.errors.map(escapeHtml).join("<br>")}</div>`
