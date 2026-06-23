@@ -373,12 +373,13 @@ def run_download(task_id):
         cmd = [
             "yt-dlp",
             "--extractor-args", "youtube:player_client=web",
-            "--remote-components", "ejs:github",
             "-f", "bestaudio/best",
             "--extract-audio",
             "--audio-format", "mp3",
             "--audio-quality", "320k",
             "--no-check-formats",
+            "--socket-timeout", "30",
+            "--retries", "3",
             "--output", output_template,
             "--newline",
             "--ignore-errors",
@@ -412,10 +413,10 @@ def run_download(task_id):
 
         while True:
             try:
-                line = output_queue.get(timeout=120)
+                line = output_queue.get(timeout=300)
             except queue.Empty:
                 process.kill()
-                task["errors"].append("yt-dlp timed out (no output for 120s)")
+                task["errors"].append("yt-dlp timed out (no output for 5 min)")
                 print("YT-DLP: TIMEOUT — killed process", flush=True)
                 break
             if line is None:
