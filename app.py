@@ -337,6 +337,7 @@ def run_download(task_id):
                         check_cmd = [
                             "yt-dlp", "--skip-download", "--print", "id",
                             "--no-warnings", "--ignore-errors",
+                            "--remote-components", "ejs:github",
                         ] + COOKIES_ARG + [f"https://www.youtube.com/watch?v={vid}"]
                         try:
                             check = subprocess.run(
@@ -362,7 +363,8 @@ def run_download(task_id):
         # ─── Download ────────────────────────────────────────────────────
         cmd = [
             "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,web",
+            "--extractor-args", "youtube:player_client=web",
+            "--remote-components", "ejs:github",
             "-f", "bestaudio/best",
             "--extract-audio",
             "--audio-format", "mp3",

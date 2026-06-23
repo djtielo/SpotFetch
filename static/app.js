@@ -264,7 +264,7 @@ function renderQueue() {
       ? `<div class="card-tracklist">${task.tracks.map(t => {
           const icons = { pending: "⏳", downloading: "▶", completed: "✅", error: "❌" };
           const icon = icons[t.status] || "⏳";
-          return `<div class="track-item ${t.status}">${icon} ${escapeHtml(t.name)}</div>`;
+          return `<div class="track-item ${t.status}">${icon} ${escapeHtml(t.name || "Carregando...")}</div>`;
         }).join("")}</div>`
       : "";
 
