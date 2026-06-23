@@ -224,7 +224,7 @@ def clip_score(title):
 
 
 def run_download(task_id):
-    """Execute yt-dlp download in a background thread."""
+    """Execute yt-dlp download in a background thread with pipeline."""
     global active_downloads
     task = None
 
@@ -255,8 +255,9 @@ def run_download(task_id):
         env["PYTHONIOENCODING"] = "utf-8"
 
         # ─── Folder setup & Resume ────────────────────────────────────────
-        output_template = str(DOWNLOADS_DIR / "%(title)s.%(ext)s")
-        all_queries = None  # full list before resume filtering
+        all_queries = None
+        folder_path = None
+        safe_name = None
         if folder_name and task["type"] in ("playlist", "album"):
             safe_name = re.sub(r'[<>:"/\\|?*]', '', folder_name).strip()
             safe_name = re.sub(r'\s+', ' ', safe_name)
@@ -264,14 +265,11 @@ def run_download(task_id):
                 safe_name = task["type"].capitalize()
             folder_path = DOWNLOADS_DIR / safe_name
             folder_path.mkdir(exist_ok=True)
-            output_template = str(folder_path / "%(title)s.%(ext)s")
             with queue_lock:
                 task["folder_name"] = safe_name
 
-            # Save full list before filtering
             all_queries = list(raw_queries)
 
-            # Check for already-downloaded tracks
             existing = list(folder_path.glob("*.mp3"))
             if existing:
                 remaining = []
@@ -318,208 +316,173 @@ def run_download(task_id):
                 task["logs"].append("Todas as músicas já foram baixadas!")
             return
 
-        # ─── Smart Search (parallel) ──────────────────────────────────────
-
+        total_tracks = len(raw_queries)
         with queue_lock:
             if task["total_tracks"] == 0:
-                task["total_tracks"] = len(raw_queries)
+                task["total_tracks"] = total_tracks
 
-        selected = [None] * len(raw_queries)
-        total_to_search = len(raw_queries)
+        # ─── Pipeline: Search → Download → ZIP ───────────────────────────
 
-        def do_search(idx, q):
-            if "youtube.com/watch" in q or "youtu.be/" in q or "music.youtube.com" in q:
-                return idx, q
-            search_cmd = [
-                "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
-                "--extractor-args", "youtube:player_client=android",
-            ] + COOKIES_ARG + [f"ytsearch5:{q}"]
-            try:
-                proc = subprocess.run(
-                    search_cmd, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=30, env=env,
-                )
-                if proc.returncode == 0:
-                    data = json.loads(proc.stdout)
-                    entries = data.get("entries") or []
-                    valid = [e for e in entries if e.get("id") and e.get("title")]
-                    valid.sort(key=lambda e: clip_score(e["title"]))
-                    if valid:
-                        return idx, f"https://www.youtube.com/watch?v={valid[0]['id']}"
-            except Exception:
-                pass
-            return idx, f"ytsearch1:{q}"
+        dl_done = 0
+        pipeline_lock = threading.Lock()
+        download_slots = threading.Semaphore(min(2, total_tracks))
 
+        zip_path = None
+        if folder_path and safe_name:
+            zip_path = DOWNLOADS_DIR / f"{safe_name}.zip"
+
+        def get_output_template(idx):
+            base = folder_path if folder_path else DOWNLOADS_DIR
+            return str(base / f"{idx}_%(id)s.%(ext)s")
+
+        def find_track_entry(query):
+            for i, t in enumerate(track_list):
+                if t["name"] == query:
+                    return i
+            return None
+
+        def process_one(idx, query):
+            """Search YouTube and download a single track."""
+            nonlocal dl_done
+
+            # ── Step 1: Search YouTube ──
+            if "youtube.com/watch" in query or "youtu.be/" in query or "music.youtube.com" in query:
+                youtube_url = query
+            else:
+                search_cmd = [
+                    "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
+                    "--extractor-args", "youtube:player_client=android",
+                ] + COOKIES_ARG + [f"ytsearch5:{query}"]
+                try:
+                    proc = subprocess.run(
+                        search_cmd, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=30, env=env,
+                    )
+                    if proc.returncode == 0:
+                        data = json.loads(proc.stdout)
+                        entries = data.get("entries") or []
+                        valid = [e for e in entries if e.get("id") and e.get("title")]
+                        valid.sort(key=lambda e: clip_score(e["title"]))
+                        youtube_url = f"https://www.youtube.com/watch?v={valid[0]['id']}" if valid else f"ytsearch1:{query}"
+                    else:
+                        youtube_url = f"ytsearch1:{query}"
+                except Exception:
+                    youtube_url = f"ytsearch1:{query}"
+
+            t_idx = find_track_entry(query)
+            if t_idx is not None:
+                track_list[t_idx]["status"] = "found"
+
+            # ── Step 2: Download (respects concurrency limit via semaphore) ──
+            with download_slots:
+                if t_idx is not None:
+                    track_list[t_idx]["status"] = "downloading"
+                    with queue_lock:
+                        task["current_track"] = track_list[t_idx]["name"]
+
+                output_tmpl = get_output_template(idx)
+                cmd = [
+                    "yt-dlp",
+                    "--remote-components", "ejs:github",
+                    "--extractor-args", "youtube:player_client=web",
+                    "-f", "ba/best",
+                    "--extract-audio",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "320k",
+                    "--no-check-formats",
+                    "--socket-timeout", "30",
+                    "--retries", "3",
+                    "--throttled-rate", "100K",
+                    "--concurrent-fragments", "3",
+                    "--output", output_tmpl,
+                    "--newline",
+                    "--ignore-errors",
+                    youtube_url,
+                ] + COOKIES_ARG
+
+                try:
+                    proc = subprocess.run(
+                        cmd, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=300, env=env,
+                    )
+
+                    base = folder_path if folder_path else DOWNLOADS_DIR
+                    candidates = list(base.glob(f"{idx}_*.mp3"))
+                    mp3_path = candidates[0] if candidates else None
+
+                    if mp3_path and mp3_path.exists():
+                        if t_idx is not None:
+                            track_list[t_idx]["status"] = "completed"
+                        with pipeline_lock:
+                            dl_done += 1
+
+                        if zip_path:
+                            with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_DEFLATED) as zf:
+                                zf.write(mp3_path, mp3_path.name)
+                            try:
+                                mp3_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                    else:
+                        if t_idx is not None:
+                            track_list[t_idx]["status"] = "error"
+                        with queue_lock:
+                            task["errors"].append(f"Formato indisponível: '{query}'")
+
+                except subprocess.TimeoutExpired:
+                    if t_idx is not None:
+                        track_list[t_idx]["status"] = "error"
+                    with queue_lock:
+                        task["errors"].append(f"Timeout no download de '{query}'")
+                except Exception as e:
+                    if t_idx is not None:
+                        track_list[t_idx]["status"] = "error"
+                    with queue_lock:
+                        task["errors"].append(f"Erro ao baixar '{query}': {str(e)}")
+
+        # ── Execute pipeline: all tracks searched in parallel,               ──
+        #    downloads limited to 2 concurrent via semaphore                   ──
         with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(do_search, i, q) for i, q in enumerate(raw_queries)]
+            futures = [executor.submit(process_one, i, q) for i, q in enumerate(raw_queries)]
             for f in as_completed(futures):
-                idx, result = f.result()
-                selected[idx] = result
-                if idx < len(track_list):
-                    track_list[idx]["status"] = "found"
-                found_cnt = sum(1 for t in track_list if t["status"] in ("found", "completed"))
+                try:
+                    f.result()
+                except Exception:
+                    pass
+
+                with pipeline_lock:
+                    current_done = dl_done
                 with queue_lock:
-                    task["completed_tracks"] = found_cnt
-                    task["progress"] = int(found_cnt / max(1, total_to_search) * 50)
-                    task["current_track"] = track_list[idx]["name"] if idx < len(track_list) else str(raw_queries[idx])
-                    if track_list:
-                        task["tracks"] = list(track_list)
-
-        selected = [s if s else f"ytsearch1:{raw_queries[i]}" for i, s in enumerate(selected)]
-        queries = selected
-        task["logs"].append(f"Downloading {len(queries)} músicas...")
-
-        # ─── Download ────────────────────────────────────────────────────
-        task["logs"].append("Iniciando download das músicas...")
-        cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=web",
-            "-f", "ba",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--audio-quality", "320k",
-            "--no-check-formats",
-            "--socket-timeout", "30",
-            "--retries", "3",
-            "--throttled-rate", "100K",
-            "--concurrent-fragments", "3",
-            "--output", output_template,
-            "--newline",
-            "--ignore-errors",
-        ] + COOKIES_ARG + queries
-
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=env,
-        )
-
-        with queue_lock:
-            task["pid"] = process.pid
-
-        # Read yt-dlp output in a thread with timeout
-        output_queue = queue.Queue()
-
-        def reader_thread(proc, q):
-            try:
-                for line in proc.stdout:
-                    q.put(line)
-            finally:
-                q.put(None)
-
-        reader = threading.Thread(target=reader_thread, args=(process, output_queue), daemon=True)
-        reader.start()
-
-        while True:
-            try:
-                line = output_queue.get(timeout=300)
-            except queue.Empty:
-                process.kill()
-                task["errors"].append("yt-dlp timed out (no output for 5 min)")
-                print("YT-DLP: TIMEOUT — killed process", flush=True)
-                break
-            if line is None:
-                break
-
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-
-            try:
-                print(f"YT-DLP: {line_stripped}", flush=True)
-            except UnicodeEncodeError:
-                safe = line_stripped.encode('utf-8', errors='replace').decode('utf-8')
-                print(f"YT-DLP: {safe}", flush=True)
-            with queue_lock:
-                task["logs"].append(line_stripped)
-                trim_task_logs(task)
-
-            # Track progression: detect when yt-dlp starts downloading a file
-            if "[download] Destination:" in line_stripped:
-                with queue_lock:
-                    prev = next((i for i, t in enumerate(track_list)
-                                 if t["status"] == "downloading"), None)
-                    if prev is not None:
-                        track_list[prev]["status"] = "completed"
-                    nxt = next((i for i, t in enumerate(track_list)
-                                if t["status"] in ("pending", "found")), None)
-                    if nxt is not None:
-                        track_list[nxt]["status"] = "downloading"
-                        task["current_track"] = track_list[nxt]["name"]
+                    task["completed_tracks"] = current_done
+                    task["progress"] = min(99, int((current_done / max(1, total_tracks)) * 100))
                     task["tracks"] = list(track_list)
-
-            # Track errors by matching video ID to the selected URL list
-            if "ERROR:" in line_stripped:
-                err_match = re.search(r'\[(\w+)\]', line_stripped)
-                if err_match:
-                    err_vid = err_match.group(1)
-                    for i, url_str in enumerate(selected):
-                        if err_vid in url_str and i < len(track_list):
-                            track_list[i]["status"] = "error"
-                            with queue_lock:
-                                task["tracks"] = list(track_list)
-                            break
-                with queue_lock:
-                    task["errors"].append(line_stripped)
                     trim_task_logs(task)
 
-            # Update progress
-            if track_list:
-                with queue_lock:
-                    done = sum(1 for t in track_list if t["status"] == "completed")
-                    task["completed_tracks"] = done
-                    task["progress"] = min(99, int(done / len(track_list) * 100))
-            elif "[download]" in line_stripped and "%" in line_stripped:
-                match = re.search(r'(\d+\.\d+)%', line_stripped)
-                if match:
-                    try:
-                        task["progress"] = int(float(match.group(1)))
-                    except ValueError:
-                        pass
-
-        process.wait()
+        # ─── Finalização ──────────────────────────────────────────────────
+        success_count = sum(1 for t in track_list if t["status"] == "completed")
 
         with queue_lock:
-            # Mark any remaining downloading/pending as completed on success
-            if process.returncode == 0:
-                for t in track_list:
-                    if t["status"] in ("pending", "found", "downloading"):
-                        t["status"] = "completed"
-                task["tracks"] = list(track_list)
-                task["completed_tracks"] = sum(1 for t in track_list if t["status"] == "completed")
-                task["status"] = "completed"
-                task["progress"] = 100
+            task["completed_tracks"] = success_count
+            task["progress"] = 100
 
-                # ─── Find downloaded files for auto-download ──────────────
-                if all_queries is not None and folder_name:
-                    # Playlist/Album — find all files and create ZIP
-                    safe_name = re.sub(r'[<>:"/\\|?*]', '', folder_name).strip()
-                    safe_name = re.sub(r'\s+', ' ', safe_name)
-                    folder_path = DOWNLOADS_DIR / safe_name
-                    if folder_path.exists():
-                        all_files = sorted(folder_path.glob("*.mp3"))
-                        zip_filename = f"{safe_name}.zip"
-                        zip_path = DOWNLOADS_DIR / zip_filename
-                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                            for f in all_files:
-                                zf.write(f, f.name)
-                        task["zip_url"] = f"/api/downloads/{zip_filename}"
+            if success_count > 0:
+                task["logs"].append(f"Download concluído: {success_count} de {total_tracks} músicas.")
+                task["status"] = "completed"
+
+                if all_queries is not None and folder_name and safe_name:
+                    if zip_path and zip_path.exists():
+                        task["zip_url"] = f"/api/downloads/{zip_path.name}"
                 else:
-                    # Single track — find the single mp3
-                    mp3_files = sorted(DOWNLOADS_DIR.glob("*.mp3"))
+                    base = folder_path if folder_path else DOWNLOADS_DIR
+                    mp3_files = sorted(base.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
                     if mp3_files:
-                        latest = max(mp3_files, key=lambda p: p.stat().st_mtime)
-                        if latest:
-                            rel = latest.relative_to(DOWNLOADS_DIR)
-                            task["file_url"] = f"/api/downloads/{rel}"
+                        latest = mp3_files[-1]
+                        rel = latest.relative_to(DOWNLOADS_DIR)
+                        task["file_url"] = f"/api/downloads/{rel}"
             else:
                 task["status"] = "error"
                 if not task["errors"]:
-                    task["errors"].append(f"yt-dlp exited with code {process.returncode}")
+                    task["errors"].append("Nenhuma música foi baixada com sucesso.")
 
     except FileNotFoundError:
         with queue_lock:
@@ -529,6 +492,8 @@ def run_download(task_id):
         with queue_lock:
             task["status"] = "error"
             task["errors"].append(str(e))
+        import traceback
+        print(f"ERRO: {traceback.format_exc()}", flush=True)
     finally:
         with queue_lock:
             if task:
