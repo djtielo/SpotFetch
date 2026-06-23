@@ -405,7 +405,13 @@ function checkServerReady() {
   }, 1500);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  // Initialize session (user isolation)
+  try {
+    await fetch(`${API}/api/session`);
+  } catch (e) {
+    // Session will be created on first request anyway
+  }
   checkServerReady();
 });
 

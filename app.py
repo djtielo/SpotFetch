@@ -14,7 +14,7 @@ import queue
 from pathlib import Path
 from datetime import datetime
 
-from flask import Flask, request, jsonify, Response, send_file
+from flask import Flask, request, jsonify, Response, send_file, session
 from flask_cors import CORS
 
 # ─── Fix Windows console encoding ────────────────────────────────────────────
@@ -97,6 +97,7 @@ if COOKIES_FILE and COOKIES_FILE.exists():
     COOKIES_ARG = ["--cookies", str(COOKIES_FILE)]
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+app.secret_key = os.environ.get("SECRET_KEY", "spotfetch-dev-key-change-in-prod")
 CORS(app)
 
 # ─── Download Queue & State ─────────────────────────────────────────────────
@@ -557,6 +558,13 @@ def index():
     return send_file("static/index.html")
 
 
+@app.route("/api/session")
+def get_session():
+    if "user_id" not in session:
+        session["user_id"] = str(uuid.uuid4())[:8]
+    return jsonify({"user_id": session["user_id"]})
+
+
 @app.route("/api/download", methods=["POST"])
 def start_download():
     """Start a new download task."""
@@ -578,6 +586,8 @@ def start_download():
     if "playlist" in url or "album" in url or "artist" in url:
         url_type = "playlist"
 
+    user_id = session.get("user_id", "")
+
     task_id = str(uuid.uuid4())[:8]
 
     with queue_lock:
@@ -585,6 +595,7 @@ def start_download():
             "id": task_id,
             "url": url,
             "type": url_type,
+            "user_id": user_id,
             "status": "queued",
             "progress": 0,
             "total_tracks": 1 if url_type == "track" else 0,
@@ -607,7 +618,8 @@ def start_download():
 
 @app.route("/api/progress/<task_id>")
 def stream_progress(task_id):
-    """SSE endpoint for real-time progress updates."""
+    """SSE endpoint for real-time progress updates (own user only)."""
+    user_id = session.get("user_id", "")
     def generate():
         last_progress = -1
         last_status = ""
@@ -621,6 +633,10 @@ def stream_progress(task_id):
 
             if not task:
                 yield f"data: {json.dumps({'error': 'Task not found'})}\n\n"
+                break
+
+            if task.get("user_id") != user_id:
+                yield f"data: {json.dumps({'error': 'Unauthorized'})}\n\n"
                 break
 
             current_progress = task["progress"]
@@ -677,10 +693,13 @@ def stream_progress(task_id):
 
 @app.route("/api/queue")
 def get_queue():
-    """Get all tasks in the download queue."""
+    """Get all tasks for the current user."""
+    user_id = session.get("user_id", "")
     with queue_lock:
         tasks = []
         for task in download_queue.values():
+            if task.get("user_id") != user_id:
+                continue
             tasks.append({
                 "id": task["id"],
                 "url": task["url"],
@@ -702,11 +721,14 @@ def get_queue():
 
 @app.route("/api/queue/<task_id>", methods=["DELETE"])
 def cancel_download(task_id):
-    """Cancel a download task."""
+    """Cancel a download task (own user only)."""
+    user_id = session.get("user_id", "")
     with queue_lock:
         task = download_queue.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
+        if task.get("user_id") != user_id:
+            return jsonify({"error": "Unauthorized"}), 403
 
         if task["status"] == "downloading" and task.get("pid"):
             try:
