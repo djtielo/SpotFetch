@@ -256,6 +256,7 @@ def run_download(task_id):
             # Otherwise, search YouTube for the best match
             search_cmd = [
                 "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
+                "--extractor-args", "youtube:player_client=android",
                 f"ytsearch10:{q}",
             ]
             try:
@@ -274,6 +275,7 @@ def run_download(task_id):
                         check_cmd = [
                             "yt-dlp", "--skip-download", "--print", "id",
                             "--no-warnings", "--ignore-errors",
+                            "--extractor-args", "youtube:player_client=android",
                             f"https://www.youtube.com/watch?v={vid}",
                         ]
                         try:
@@ -306,6 +308,7 @@ def run_download(task_id):
             "--output", output_template,
             "--newline",
             "--ignore-errors",
+            "--extractor-args", "youtube:player_client=android",
         ] + queries
 
         process = subprocess.Popen(
