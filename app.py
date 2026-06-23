@@ -400,12 +400,59 @@ def run_download(task_id):
                     youtube_url,
                 ] + COOKIES_ARG
 
-                try:
-                    proc = subprocess.run(
-                        cmd, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=300, env=env,
-                    )
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    env=env,
+                )
 
+                output_queue = queue.Queue()
+
+                def reader_thread(proc, q):
+                    try:
+                        for line in proc.stdout:
+                            q.put(line)
+                    finally:
+                        q.put(None)
+
+                reader = threading.Thread(target=reader_thread, args=(process, output_queue), daemon=True)
+                reader.start()
+
+                download_ok = True
+                while True:
+                    try:
+                        line = output_queue.get(timeout=120)
+                    except queue.Empty:
+                        process.kill()
+                        download_ok = False
+                        if t_idx is not None:
+                            track_list[t_idx]["status"] = "error"
+                        with queue_lock:
+                            task["errors"].append(f"yt-dlp travado (sem saída por 120s) em '{query}'")
+                        break
+                    if line is None:
+                        break
+
+                    line_stripped = line.strip()
+                    if not line_stripped:
+                        continue
+
+                    try:
+                        print(f"YT-DLP: {line_stripped}", flush=True)
+                    except UnicodeEncodeError:
+                        safe = line_stripped.encode("utf-8", errors="replace").decode("utf-8")
+                        print(f"YT-DLP: {safe}", flush=True)
+                    with queue_lock:
+                        task["logs"].append(line_stripped)
+                        trim_task_logs(task)
+
+                process.wait()
+
+                if download_ok:
                     base = folder_path if folder_path else DOWNLOADS_DIR
                     candidates = list(base.glob(f"{idx}_*.mp3"))
                     mp3_path = candidates[0] if candidates else None
@@ -428,17 +475,6 @@ def run_download(task_id):
                             track_list[t_idx]["status"] = "error"
                         with queue_lock:
                             task["errors"].append(f"Formato indisponível: '{query}'")
-
-                except subprocess.TimeoutExpired:
-                    if t_idx is not None:
-                        track_list[t_idx]["status"] = "error"
-                    with queue_lock:
-                        task["errors"].append(f"Timeout no download de '{query}'")
-                except Exception as e:
-                    if t_idx is not None:
-                        track_list[t_idx]["status"] = "error"
-                    with queue_lock:
-                        task["errors"].append(f"Erro ao baixar '{query}': {str(e)}")
 
         # ── Execute pipeline: all tracks searched in parallel,               ──
         #    downloads limited to 2 concurrent via semaphore                   ──
