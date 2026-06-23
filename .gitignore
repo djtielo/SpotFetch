@@ -7,3 +7,4 @@ downloads/*.zip
 !downloads/.gitkeep
 server_*.log
 server_pid.txt
+cookies.txt

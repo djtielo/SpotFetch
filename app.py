@@ -27,6 +27,22 @@ BASE_DIR = Path(__file__).parent.resolve()
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
+# ─── Cookies Setup ──────────────────────────────────────────────
+COOKIES_FILE = BASE_DIR / "cookies.txt"
+cookies_env = os.environ.get("COOKIES")
+if cookies_env:
+    COOKIES_FILE.write_text(cookies_env, encoding="utf-8")
+    print(f"  [>] Cookies loaded from COOKIES env var ({len(cookies_env)} chars)")
+elif COOKIES_FILE.exists():
+    print(f"  [>] Cookies loaded from {COOKIES_FILE.name}")
+else:
+    COOKIES_FILE = None
+    print("  [>] No cookies file found — YouTube may block server IPs")
+
+COOKIES_ARG = []
+if COOKIES_FILE and COOKIES_FILE.exists():
+    COOKIES_ARG = ["--cookies", str(COOKIES_FILE)]
+
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
 
@@ -257,8 +273,7 @@ def run_download(task_id):
             search_cmd = [
                 "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
                 "--extractor-args", "youtube:player_client=android",
-                f"ytsearch10:{q}",
-            ]
+            ] + COOKIES_ARG + [f"ytsearch10:{q}"]
             try:
                 proc = subprocess.run(
                     search_cmd, capture_output=True, text=True,
@@ -276,8 +291,7 @@ def run_download(task_id):
                             "yt-dlp", "--skip-download", "--print", "id",
                             "--no-warnings", "--ignore-errors",
                             "--extractor-args", "youtube:player_client=android",
-                            f"https://www.youtube.com/watch?v={vid}",
-                        ]
+                        ] + COOKIES_ARG + [f"https://www.youtube.com/watch?v={vid}"]
                         try:
                             check = subprocess.run(
                                 check_cmd, capture_output=True, text=True,
@@ -309,7 +323,7 @@ def run_download(task_id):
             "--newline",
             "--ignore-errors",
             "--extractor-args", "youtube:player_client=android",
-        ] + queries
+        ] + COOKIES_ARG + queries
 
         process = subprocess.Popen(
             cmd,
