@@ -6,6 +6,7 @@ import json
 import time
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import zipfile
 import shutil
@@ -316,20 +317,22 @@ def run_download(task_id):
                 task["logs"].append("Todas as músicas já foram baixadas!")
             return
 
-        # ─── Smart Search ────────────────────────────────────────────────
-        selected = []
+        # ─── Smart Search (parallel) ──────────────────────────────────────
+
+        with queue_lock:
+            if task["total_tracks"] == 0:
+                task["total_tracks"] = len(raw_queries)
+
+        selected = [None] * len(raw_queries)
         total_to_search = len(raw_queries)
-        for idx, q in enumerate(raw_queries):
-            task["current_track"] = q
-            # If it's already a YouTube URL, use it directly
+
+        def do_search(idx, q):
             if "youtube.com/watch" in q or "youtu.be/" in q or "music.youtube.com" in q:
-                selected.append(q)
-                continue
-            # Otherwise, search YouTube for the best match
+                return idx, q
             search_cmd = [
                 "yt-dlp", "--flat-playlist", "-J", "-i", "--no-warnings",
                 "--extractor-args", "youtube:player_client=android",
-            ] + COOKIES_ARG + [f"ytsearch10:{q}"]
+            ] + COOKIES_ARG + [f"ytsearch5:{q}"]
             try:
                 proc = subprocess.run(
                     search_cmd, capture_output=True, text=True,
@@ -340,50 +343,28 @@ def run_download(task_id):
                     entries = data.get("entries") or []
                     valid = [e for e in entries if e.get("id") and e.get("title")]
                     valid.sort(key=lambda e: clip_score(e["title"]))
-                    found_working = False
-                    for entry in valid:
-                        vid = entry["id"]
-                        check_cmd = [
-                            "yt-dlp", "--skip-download", "--print", "id",
-                            "--no-warnings", "--ignore-errors",
-                            "--remote-components", "ejs:github",
-                        ] + COOKIES_ARG + [f"https://www.youtube.com/watch?v={vid}"]
-                        try:
-                            check = subprocess.run(
-                                check_cmd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace",
-                                timeout=15, env=env,
-                            )
-                            if check.returncode == 0 and check.stdout.strip() == vid:
-                                selected.append(f"https://www.youtube.com/watch?v={vid}")
-                                found_working = True
-                                break
-                        except Exception:
-                            continue
-                    if found_working:
-                        # Update track status → found and progress
-                        if idx < len(track_list):
-                            track_list[idx]["status"] = "found"
-                        found_count = sum(1 for t in track_list if t["status"] in ("found", "completed"))
-                        with queue_lock:
-                            task["completed_tracks"] = found_count
-                            task["progress"] = int(found_count / max(1, total_to_search) * 50)
-                            if track_list:
-                                task["tracks"] = list(track_list)
-                        continue
+                    if valid:
+                        return idx, f"https://www.youtube.com/watch?v={valid[0]['id']}"
             except Exception:
                 pass
-            selected.append(f"ytsearch1:{q}")
-            # Even on fallback, mark as found so user sees progress
-            if idx < len(track_list):
-                track_list[idx]["status"] = "found"
-            found_count = sum(1 for t in track_list if t["status"] in ("found", "completed"))
-            with queue_lock:
-                task["completed_tracks"] = found_count
-                task["progress"] = int(found_count / max(1, total_to_search) * 50)
-                if track_list:
-                    task["tracks"] = list(track_list)
+            return idx, f"ytsearch1:{q}"
 
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(do_search, i, q) for i, q in enumerate(raw_queries)]
+            for f in as_completed(futures):
+                idx, result = f.result()
+                selected[idx] = result
+                if idx < len(track_list):
+                    track_list[idx]["status"] = "found"
+                found_cnt = sum(1 for t in track_list if t["status"] in ("found", "completed"))
+                with queue_lock:
+                    task["completed_tracks"] = found_cnt
+                    task["progress"] = int(found_cnt / max(1, total_to_search) * 50)
+                    task["current_track"] = track_list[idx]["name"] if idx < len(track_list) else str(raw_queries[idx])
+                    if track_list:
+                        task["tracks"] = list(track_list)
+
+        selected = [s if s else f"ytsearch1:{raw_queries[i]}" for i, s in enumerate(selected)]
         queries = selected
         task["logs"].append(f"Downloading {len(queries)} músicas...")
 
