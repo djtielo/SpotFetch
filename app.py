@@ -294,9 +294,9 @@ def run_download(task_id):
             remaining_set = set(raw_queries)
             for q in all_queries:
                 status = "pending" if q in remaining_set else "completed"
-                track_list.append({"name": q, "status": status})
+                track_list.append({"name": str(q), "status": status})
         elif len(raw_queries) == 1:
-            track_list.append({"name": raw_queries[0], "status": "pending"})
+            track_list.append({"name": str(raw_queries[0]), "status": "pending"})
         if track_list:
             with queue_lock:
                 task["tracks"] = track_list

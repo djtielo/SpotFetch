@@ -247,7 +247,7 @@ function renderQueue() {
     const showCancel = task.status === "downloading" || task.status === "queued";
     const showProgress = task.status === "downloading" || task.status === "queued";
     const trackInfo = task.current_track
-      ? `<div class="card-track">♪ ${escapeHtml(task.current_track)}</div>`
+      ? `<div class="card-track">♪ ${escapeHtml(task.current_track || "")}</div>`
       : task.status === "queued" || task.status === "downloading"
         ? `<div class="card-track card-track-pending">♪ Aguardando...</div>`
         : "";
@@ -266,7 +266,7 @@ function renderQueue() {
       ? `<div class="card-tracklist">${task.tracks.map(t => {
           const icons = { pending: "⏳", downloading: "▶", completed: "✅", error: "❌" };
           const icon = icons[t.status] || "⏳";
-          return `<div class="track-item ${t.status}">${icon} ${escapeHtml(t.name || "Carregando...")}</div>`;
+          return `<div class="track-item ${t.status || ""}">${icon} ${escapeHtml(t ? t.name : "") || "Carregando..."}</div>`;
         }).join("")}</div>`
       : "";
 
