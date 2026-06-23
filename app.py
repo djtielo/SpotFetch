@@ -9,6 +9,7 @@ import threading
 import re
 import zipfile
 import shutil
+import queue
 from pathlib import Path
 from datetime import datetime
 
@@ -361,7 +362,7 @@ def run_download(task_id):
         # ─── Download ────────────────────────────────────────────────────
         cmd = [
             "yt-dlp",
-            "--extractor-args", "youtube:player_client=android",
+            "--extractor-args", "youtube:player_client=android,web",
             "-f", "bestaudio/best",
             "--extract-audio",
             "--audio-format", "mp3",
@@ -385,27 +386,48 @@ def run_download(task_id):
         with queue_lock:
             task["pid"] = process.pid
 
-        for line in process.stdout:
+        # Read yt-dlp output in a thread with timeout
+        output_queue = queue.Queue()
+
+        def reader_thread(proc, q):
+            try:
+                for line in proc.stdout:
+                    q.put(line)
+            finally:
+                q.put(None)
+
+        reader = threading.Thread(target=reader_thread, args=(process, output_queue), daemon=True)
+        reader.start()
+
+        while True:
+            try:
+                line = output_queue.get(timeout=120)
+            except queue.Empty:
+                process.kill()
+                task["errors"].append("yt-dlp timed out (no output for 120s)")
+                print("YT-DLP: TIMEOUT — killed process", flush=True)
+                break
+            if line is None:
+                break
+
             line_stripped = line.strip()
             if not line_stripped:
                 continue
 
             try:
-                print(f"YT-DLP: {line_stripped}")
+                print(f"YT-DLP: {line_stripped}", flush=True)
             except UnicodeEncodeError:
                 safe = line_stripped.encode('utf-8', errors='replace').decode('utf-8')
-                print(f"YT-DLP: {safe}")
+                print(f"YT-DLP: {safe}", flush=True)
             task["logs"].append(line_stripped)
 
             # Track progression: detect when yt-dlp starts downloading a file
             if "[download] Destination:" in line_stripped:
                 with queue_lock:
-                    # Mark previous track as completed
                     prev = next((i for i, t in enumerate(track_list)
                                  if t["status"] == "downloading"), None)
                     if prev is not None:
                         track_list[prev]["status"] = "completed"
-                    # Find next pending track
                     nxt = next((i for i, t in enumerate(track_list)
                                 if t["status"] == "pending"), None)
                     if nxt is not None:
@@ -428,13 +450,11 @@ def run_download(task_id):
 
             # Update progress
             if track_list:
-                # Playlist mode: based on completed tracks
                 with queue_lock:
                     done = sum(1 for t in track_list if t["status"] == "completed")
                     task["completed_tracks"] = done
                     task["progress"] = min(99, int(done / len(track_list) * 100))
             elif "[download]" in line_stripped and "%" in line_stripped:
-                # Single track mode: based on download percentage
                 match = re.search(r'(\d+\.\d+)%', line_stripped)
                 if match:
                     try:
