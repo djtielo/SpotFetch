@@ -30,7 +30,16 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 # ─── Cookies Setup ──────────────────────────────────────────────
 COOKIES_FILE = BASE_DIR / "cookies.txt"
 cookies_env = os.environ.get("COOKIES")
-if cookies_env:
+cookies_b64 = os.environ.get("COOKIES_B64")
+if cookies_b64:
+    import base64
+    try:
+        decoded = base64.b64decode(cookies_b64).decode("utf-8")
+        COOKIES_FILE.write_text(decoded, encoding="utf-8")
+        print(f"  [>] Cookies loaded from COOKIES_B64 env var ({len(decoded)} chars)")
+    except Exception as e:
+        print(f"  [>] Failed to decode COOKIES_B64: {e}")
+elif cookies_env:
     COOKIES_FILE.write_text(cookies_env, encoding="utf-8")
     print(f"  [>] Cookies loaded from COOKIES env var ({len(cookies_env)} chars)")
 elif COOKIES_FILE.exists():
