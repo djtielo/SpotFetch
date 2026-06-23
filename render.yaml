@@ -7,3 +7,5 @@ services:
     envVars:
       - key: PORT
         value: 5000
+secretFiles:
+  - mountPath: /etc/secrets/cookies.txt

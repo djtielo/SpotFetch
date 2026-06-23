@@ -28,30 +28,40 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # ─── Cookies Setup ──────────────────────────────────────────────
-COOKIES_FILE = BASE_DIR / "cookies.txt"
+SECRETS_FILE = Path("/etc/secrets/cookies.txt")
+COOKIES_FILE = None
 cookies_env = os.environ.get("COOKIES")
 cookies_b64 = os.environ.get("COOKIES_B64")
-if cookies_b64:
+
+if SECRETS_FILE.exists():
+    COOKIES_FILE = SECRETS_FILE
+    print(f"  [>] Cookies loaded from Render Secret File ({SECRETS_FILE})")
+elif cookies_b64:
     import base64
+    COOKIES_FILE = BASE_DIR / "cookies.txt"
     try:
         decoded = base64.b64decode(cookies_b64).decode("utf-8")
         COOKIES_FILE.write_text(decoded, encoding="utf-8")
         print(f"  [>] Cookies loaded from COOKIES_B64 env var ({len(decoded)} chars)")
     except Exception as e:
         print(f"  [>] Failed to decode COOKIES_B64: {e}")
+        COOKIES_FILE = None
 elif cookies_env:
+    COOKIES_FILE = BASE_DIR / "cookies.txt"
     COOKIES_FILE.write_text(cookies_env, encoding="utf-8")
     print(f"  [>] Cookies loaded from COOKIES env var ({len(cookies_env)} chars)")
-elif COOKIES_FILE.exists():
+elif (BASE_DIR / "cookies.txt").exists():
+    COOKIES_FILE = BASE_DIR / "cookies.txt"
     print(f"  [>] Cookies loaded from {COOKIES_FILE.name}")
+
+if COOKIES_FILE:
+    print(f"  [>] Using cookies: {COOKIES_FILE}")
 else:
-    COOKIES_FILE = None
     print("  [>] No cookies file found — YouTube may block server IPs")
 
 COOKIES_ARG = []
 if COOKIES_FILE and COOKIES_FILE.exists():
     COOKIES_ARG = ["--cookies", str(COOKIES_FILE)]
-    print(f"  [>] Cookies loaded from {'env var' if cookies_env else 'file'} ({len(cookies_env or '')} chars)")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
