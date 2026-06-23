@@ -42,6 +42,7 @@ else:
 COOKIES_ARG = []
 if COOKIES_FILE and COOKIES_FILE.exists():
     COOKIES_ARG = ["--cookies", str(COOKIES_FILE)]
+    print(f"  [>] Cookies loaded from {'env var' if cookies_env else 'file'} ({len(cookies_env or '')} chars)")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
@@ -290,7 +291,6 @@ def run_download(task_id):
                         check_cmd = [
                             "yt-dlp", "--skip-download", "--print", "id",
                             "--no-warnings", "--ignore-errors",
-                            "--extractor-args", "youtube:player_client=android",
                         ] + COOKIES_ARG + [f"https://www.youtube.com/watch?v={vid}"]
                         try:
                             check = subprocess.run(
@@ -322,7 +322,6 @@ def run_download(task_id):
             "--output", output_template,
             "--newline",
             "--ignore-errors",
-            "--extractor-args", "youtube:player_client=android",
         ] + COOKIES_ARG + queries
 
         process = subprocess.Popen(
