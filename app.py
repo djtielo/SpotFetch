@@ -325,7 +325,7 @@ def run_download(task_id):
 
         dl_done = 0
         pipeline_lock = threading.Lock()
-        download_slots = threading.Semaphore(min(2, total_tracks))
+        download_slots = threading.Semaphore(1)
 
         zip_path = None
         if folder_path and safe_name:
