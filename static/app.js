@@ -254,7 +254,9 @@ function renderQueue() {
     const progressLabel =
       task.total_tracks > 1
         ? `${task.completed_tracks || 0} / ${task.total_tracks} faixas`
-        : "";
+        : task.status === "downloading" && (task.progress || 0) === 0
+          ? "Pesquisando..."
+          : "";
     const errorsHtml =
       task.errors && task.errors.length > 0
         ? `<div class="card-errors">${task.errors.map(escapeHtml).join("<br>")}</div>`
