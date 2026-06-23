@@ -2,10 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install ffmpeg and yt-dlp dependencies
+# Install ffmpeg, curl and yt-dlp dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install deno (JS runtime required by yt-dlp for YouTube extraction)
+RUN curl -fsSL https://deno.land/install.sh | sh && \
+    ln -s /root/.deno/bin/deno /usr/local/bin/deno
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -32,30 +32,53 @@ SECRETS_FILE = Path("/etc/secrets/cookies.txt")
 COOKIES_FILE = None
 cookies_env = os.environ.get("COOKIES")
 cookies_b64 = os.environ.get("COOKIES_B64")
+CLEAN_COOKIES_PATH = BASE_DIR / "cookies_clean.txt"
+
+
+def clean_cookie_file(content: str) -> str:
+    """Fix Netscape cookie file where tabs were converted to spaces."""
+    lines = content.splitlines()
+    result = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            result.append(line)
+            continue
+        if "\t" in line:
+            result.append(line)
+        else:
+            parts = re.split(r" {2,}", line)
+            if len(parts) >= 7:
+                result.append("\t".join(parts))
+            else:
+                result.append(line)
+    return "\n".join(result)
+
+
+raw_cookies = None
 
 if SECRETS_FILE.exists():
-    COOKIES_FILE = SECRETS_FILE
+    raw_cookies = SECRETS_FILE.read_text(encoding="utf-8")
     print(f"  [>] Cookies loaded from Render Secret File ({SECRETS_FILE})")
 elif cookies_b64:
     import base64
-    COOKIES_FILE = BASE_DIR / "cookies.txt"
     try:
-        decoded = base64.b64decode(cookies_b64).decode("utf-8")
-        COOKIES_FILE.write_text(decoded, encoding="utf-8")
-        print(f"  [>] Cookies loaded from COOKIES_B64 env var ({len(decoded)} chars)")
+        raw_cookies = base64.b64decode(cookies_b64).decode("utf-8")
+        print(f"  [>] Cookies loaded from COOKIES_B64 env var ({len(raw_cookies)} chars)")
     except Exception as e:
         print(f"  [>] Failed to decode COOKIES_B64: {e}")
-        COOKIES_FILE = None
 elif cookies_env:
-    COOKIES_FILE = BASE_DIR / "cookies.txt"
-    COOKIES_FILE.write_text(cookies_env, encoding="utf-8")
-    print(f"  [>] Cookies loaded from COOKIES env var ({len(cookies_env)} chars)")
+    raw_cookies = cookies_env
+    print(f"  [>] Cookies loaded from COOKIES env var ({len(raw_cookies)} chars)")
 elif (BASE_DIR / "cookies.txt").exists():
-    COOKIES_FILE = BASE_DIR / "cookies.txt"
-    print(f"  [>] Cookies loaded from {COOKIES_FILE.name}")
+    raw_cookies = (BASE_DIR / "cookies.txt").read_text(encoding="utf-8")
+    print(f"  [>] Cookies loaded from {BASE_DIR / 'cookies.txt'}")
 
-if COOKIES_FILE:
-    print(f"  [>] Using cookies: {COOKIES_FILE}")
+if raw_cookies:
+    cleaned = clean_cookie_file(raw_cookies)
+    CLEAN_COOKIES_PATH.write_text(cleaned, encoding="utf-8")
+    COOKIES_FILE = CLEAN_COOKIES_PATH
+    print(f"  [>] Cookies cleaned and written to {COOKIES_FILE}")
 else:
     print("  [>] No cookies file found — YouTube may block server IPs")
 
@@ -264,13 +287,16 @@ def run_download(task_id):
                     task["logs"].append(f"{skipped} de {total} já baixadas. Baixando {len(remaining)} restantes...")
                 raw_queries = remaining
 
-        # Build track list (for playlist/album with folder)
+        # Build track list
         track_list = []
         if all_queries is not None:
             remaining_set = set(raw_queries)
             for q in all_queries:
                 status = "pending" if q in remaining_set else "completed"
                 track_list.append({"name": q, "status": status})
+        elif len(raw_queries) == 1:
+            track_list.append({"name": raw_queries[0], "status": "pending"})
+        if track_list:
             with queue_lock:
                 task["tracks"] = track_list
 
@@ -335,9 +361,12 @@ def run_download(task_id):
         # ─── Download ────────────────────────────────────────────────────
         cmd = [
             "yt-dlp",
+            "--extractor-args", "youtube:player_client=android",
+            "-f", "bestaudio/best",
             "--extract-audio",
             "--audio-format", "mp3",
             "--audio-quality", "320k",
+            "--no-check-formats",
             "--output", output_template,
             "--newline",
             "--ignore-errors",
@@ -549,6 +578,8 @@ def stream_progress(task_id):
         last_progress = -1
         last_status = ""
         last_log_count = 0
+        last_current_track = ""
+        last_tracks_len = -1
 
         while True:
             with queue_lock:
@@ -561,11 +592,16 @@ def stream_progress(task_id):
             current_progress = task["progress"]
             current_status = task["status"]
             current_log_count = len(task["logs"])
+            current_track_val = task["current_track"]
+            current_tracks = task.get("tracks", [])
+            current_tracks_len = len(current_tracks) if current_tracks else 0
 
             # Send update if something changed
             if (current_progress != last_progress or
                 current_status != last_status or
-                current_log_count != last_log_count):
+                current_log_count != last_log_count or
+                current_track_val != last_current_track or
+                current_tracks_len != last_tracks_len):
 
                 event_data = {
                     "id": task["id"],
@@ -576,7 +612,7 @@ def stream_progress(task_id):
                     "current_track": task["current_track"],
                     "folder_name": task.get("folder_name", ""),
                     "type": task["type"],
-                    "tracks": task.get("tracks", []),
+                    "tracks": current_tracks,
                     "errors": task["errors"][-3:],
                     "logs": task["logs"][-5:],
                     "file_url": task.get("file_url", ""),
@@ -587,6 +623,8 @@ def stream_progress(task_id):
                 last_progress = current_progress
                 last_status = current_status
                 last_log_count = current_log_count
+                last_current_track = current_track_val
+                last_tracks_len = current_tracks_len
 
             if current_status in ("completed", "error", "cancelled"):
                 break
@@ -622,6 +660,8 @@ def get_queue():
                 "tracks": task.get("tracks", []),
                 "created_at": task["created_at"],
                 "errors": task["errors"][-3:],
+                "file_url": task.get("file_url", ""),
+                "zip_url": task.get("zip_url", ""),
             })
     return jsonify(tasks)
 

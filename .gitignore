@@ -8,3 +8,4 @@ downloads/*.zip
 server_*.log
 server_pid.txt
 cookies.txt
+cookies_clean.txt

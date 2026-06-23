@@ -453,6 +453,11 @@ body::before {
   margin-top: 4px;
 }
 
+.card-track-pending {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .card-status {
   flex-shrink: 0;
   display: flex;

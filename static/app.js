@@ -248,7 +248,9 @@ function renderQueue() {
     const showProgress = task.status === "downloading" || task.status === "queued";
     const trackInfo = task.current_track
       ? `<div class="card-track">♪ ${escapeHtml(task.current_track)}</div>`
-      : "";
+      : task.status === "queued" || task.status === "downloading"
+        ? `<div class="card-track card-track-pending">♪ Aguardando...</div>`
+        : "";
     const progressLabel =
       task.total_tracks > 1
         ? `${task.completed_tracks || 0} / ${task.total_tracks} faixas`
@@ -258,7 +260,7 @@ function renderQueue() {
         ? `<div class="card-errors">${task.errors.map(escapeHtml).join("<br>")}</div>`
         : "";
 
-    const tracksHtml = (task.tracks && task.tracks.length > 1)
+    const tracksHtml = (task.tracks && task.tracks.length >= 1)
       ? `<div class="card-tracklist">${task.tracks.map(t => {
           const icons = { pending: "⏳", downloading: "▶", completed: "✅", error: "❌" };
           const icon = icons[t.status] || "⏳";
