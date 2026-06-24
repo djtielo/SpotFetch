@@ -458,6 +458,15 @@ def run_download(task_id):
                     mp3_path = candidates[0] if candidates else None
 
                     if mp3_path and mp3_path.exists():
+                        clean_name = re.sub(r'[<>:"/\\|?*]', '', query).strip()
+                        clean_name = re.sub(r'\s+', ' ', clean_name)
+                        new_path = mp3_path.parent / f"{clean_name}.mp3"
+                        try:
+                            mp3_path.rename(new_path)
+                            mp3_path = new_path
+                        except Exception:
+                            pass
+
                         if t_idx is not None:
                             track_list[t_idx]["status"] = "completed"
                         with pipeline_lock:
